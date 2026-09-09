@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pt
+*.onnx
+*_ncnn_model/
+*_saved_model/
+*.tar.gz
