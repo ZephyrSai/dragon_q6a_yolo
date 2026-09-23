@@ -26,12 +26,26 @@ believe and hardest to prove.
 | FastRPC | `/dev/fastrpc-cdsp` present and accessible | `ls -l /dev/fastrpc-*` |
 | DSP skeleton | `libQnnHtpV68Skel.so` in the CDSP search path | §2.3 |
 | QAIRT / QNN SDK | 2.46–2.47, **HTP arch v68** for QCS6490 | `qnn-net-run --version` |
-| ONNX Runtime | **`onnxruntime-qnn`** only — never alongside `onnxruntime` | §3 |
+| ONNX Runtime | **`onnxruntime-qnn`** only, 2.6.0 latest — never alongside `onnxruntime` | §3 |
 | Model precision | INT8/UINT8 quantised — float models mostly fall back | §5 |
 
 **v68 matters.** QCS6490's Hexagon is HTP **v68**. Skeletons and context binaries
 built for v69/v73/v75 (8 Gen 1/2/3, Snapdragon X) will not load. Every artefact —
-skeleton, QNN context binary, pre-compiled model — has to say v68.
+skeleton, QNN context binary, pre-compiled model — has to say v68. The skeleton
+lives at `${QNN_SDK_ROOT}/lib/hexagon-v68/unsigned/libQnnHtpV68Skel.so`.
+
+The Hexagon architecture version does **not** track SoC model numbers in any
+pattern you can extrapolate from — it has to come from the board's SoC id and the
+SDK's own documentation. A wrong guess **builds cleanly and fails at load**,
+which is why so many Q6A reports end in an opaque `qnn_open` error.
+
+`onnxruntime-qnn` has its own 2.x version line, unrelated to ONNX Runtime's 1.x:
+
+| | |
+|---|---|
+| Latest `onnxruntime-qnn` | 2.6.0 |
+| Wheels for the Q6A | `manylinux_2_34_aarch64` — needs glibc ≥ 2.34 (Ubuntu 24.04 has 2.39) |
+| Python | 3.11, 3.12, 3.13 or 3.14 only |
 
 ---
 
@@ -254,3 +268,22 @@ python3 lib/fair_compare.py --model yolo11n --mode interleaved
 - `test_yolo_q6a.sh` — the suite
 - `ort_qnn_bench.py`, `tflite_bench.py`, `bench_harness.py` — per-stage harnesses
 - `export_host.sh` — host-side model export/quantisation
+
+---
+
+## 11. Provenance of the version claims
+
+The install steps here are assembled from vendor and community sources, checked
+on **23 Sep 2026**, and have **not** been run on a Dragon Q6A.
+
+| Claim | Source |
+|---|---|
+| QCS6490 is Hexagon HTP **v68**; skeleton at `lib/hexagon-v68/unsigned/`; arch version does not track SoC numbers and a wrong guess fails at load | Qualcomm QAIRT SDK documentation; [executorch #7356](https://github.com/pytorch/executorch/issues/7356) |
+| `onnxruntime-qnn` 2.6.0, aarch64 `manylinux_2_34` wheels, Python ≥ 3.11 | [PyPI](https://pypi.org/project/onnxruntime-qnn/) |
+| `qnn_open 0x80000600` causes and fix (DSP-side `libc++.so.1`, host/skel version mismatch, skeleton placement, `ADSP_LIBRARY_PATH`, CDSP remoteproc restart) | [Radxa forum thread](https://forum.radxa.com/t/radxa-dragon-q6a-dragon-q6a-ubuntu-24-04-qnn-htp-backend-fails-with-qnn-open-0x80000600/30850) — reported working with QAIRT 2.46.0 on kernel 6.18.2-current-qcs6490 |
+| `task-qualcomm` / `fastrpc` packages, udev rules for `/dev/fastrpc-*`, `fastrpc_test` as the first check | Radxa documentation and community quickstart gists |
+| Partial offload: the QNN EP partitions the graph and silently runs unsupported ops on CPU (§4) | same forum thread; consistent with ONNX Runtime's documented EP partitioning |
+| The ONNX Runtime shadowing behaviour and Ultralytics AutoUpdate (§3) | reproduced and fixed on AMD hardware in [ryzen_yolo](https://github.com/ZephyrSai/ryzen_yolo) |
+
+§6 prints what your board actually has. Where it disagrees with this table,
+believe the board.
