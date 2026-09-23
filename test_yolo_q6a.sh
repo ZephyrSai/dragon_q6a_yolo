@@ -59,6 +59,14 @@ while [ $# -gt 0 ]; do
     -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
   esac; shift
 done
+# Ultralytics "AutoUpdate" pip-installs anything its requirement check cannot
+# find. Accelerated ONNX Runtime builds ship under other distribution names
+# (onnxruntime-openvino, onnxruntime-qnn, onnxruntime-rocm), so that check fails
+# and AutoUpdate installs the plain CPU wheel straight over them - they all
+# unpack into the same onnxruntime/ directory and the last one installed wins.
+# Every later "accelerator" result is then a CPU result wearing the wrong label.
+export YOLO_AUTOINSTALL=False
+
 mkdir -p "$WORKDIR" "$LOGDIR"; : > "$RESULTS_FILE"; echo "backend,model,stage,metric,value_ms_or_fps" > "$BENCH_CSV"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 section() { echo -e "\n${BLUE}==================================================================${NC}\n${BLUE}  $1${NC}\n${BLUE}==================================================================${NC}"; }
@@ -66,6 +74,32 @@ pass() { echo -e "${GREEN}[PASS]${NC} $1"; echo "[PASS] $1" >> "$RESULTS_FILE"; 
 fail() { echo -e "${RED}[FAIL]${NC} $1"; echo "[FAIL] $1" >> "$RESULTS_FILE"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; echo "[WARN] $1" >> "$RESULTS_FILE"; }
 info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+
+# --- ONNX Runtime integrity -------------------------------------------------
+# Exactly one onnxruntime distribution may be installed: the CPU, and every
+# accelerated build, unpack into the same onnxruntime/ directory, so a second
+# one silently shadows the first. Call this after installs and again after any
+# Ultralytics export, which is where an unwanted one tends to appear.
+assert_ort_runtime() {
+  local stage="${1:-check}"
+  local dists
+  dists=$(pip list --format=freeze 2>/dev/null | grep -ciE '^onnxruntime(-[a-z]+)?==' || true)
+  if [ "${dists:-0}" -gt 1 ]; then
+    warn "ONNX Runtime integrity ($stage): $dists onnxruntime distributions installed at once - $(pip list --format=freeze 2>/dev/null | grep -iE '^onnxruntime(-[a-z]+)?==' | tr '\n' ' '). They share one directory, so one is shadowing the other. Keeping onnxruntime-qnn."
+    pip uninstall -y -q $(pip list --format=freeze 2>/dev/null | grep -ioE '^onnxruntime(-[a-z]+)?' | grep -iv "^onnxruntime-qnn$") >/dev/null 2>&1 || true
+    pip install -q --force-reinstall --no-deps onnxruntime-qnn >/dev/null 2>&1 || true
+  fi
+  if [ -n "QNNExecutionProvider" ]; then
+    local eps
+    eps=$(python3 -c "import onnxruntime as ort; print(','.join(ort.get_available_providers()))" 2>/dev/null || echo "")
+    case "$eps" in
+      *QNNExecutionProvider*) pass "ONNX Runtime integrity ($stage): QNNExecutionProvider present" ;;
+      "") warn "ONNX Runtime integrity ($stage): onnxruntime not importable" ;;
+      *)  warn "ONNX Runtime integrity ($stage): QNNExecutionProvider is gone (have: $eps). Something replaced the accelerated build - any 'accelerator' ONNX result from here on would really be CPU." ;;
+    esac
+  fi
+}
+
 
 # ==================================================================
 section "STEP 0: System / driver sanity checks"
@@ -144,7 +178,7 @@ if [ "$SKIP_INSTALL" -eq 0 ]; then
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"; pip install -q --upgrade pip
   pip install -q ultralytics onnx onnxslim 2>"$LOGDIR/pip_ultralytics.log" && pass "ultralytics installed" || fail "ultralytics install failed — $LOGDIR/pip_ultralytics.log"
-  pip install -q "onnxruntime>=1.24.1" "onnxruntime-qnn>=2.4.0" 2>"$LOGDIR/pip_ortqnn.log" && pass "onnxruntime + onnxruntime-qnn installed" || warn "onnxruntime-qnn install failed (needs Python >= 3.11, glibc >= 2.34) — $LOGDIR/pip_ortqnn.log"
+  pip uninstall -y -q onnxruntime onnxruntime-qnn >/dev/null 2>&1; pip install -q "onnxruntime-qnn>=2.4.0"; assert_ort_runtime "after install" 2>"$LOGDIR/pip_ortqnn.log" && pass "onnxruntime + onnxruntime-qnn installed" || warn "onnxruntime-qnn install failed (needs Python >= 3.11, glibc >= 2.34) — $LOGDIR/pip_ortqnn.log"
   pip install -q ncnn 2>"$LOGDIR/pip_ncnn.log" && pass "ncnn installed" || warn "ncnn install failed"
   pip install -q ai-edge-litert 2>"$LOGDIR/pip_tflite.log" && pass "ai-edge-litert installed" || warn "ai-edge-litert install failed — TFLite rows skipped"
 else
